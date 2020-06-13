@@ -1,0 +1,22 @@
+<idea-plugin>
+    <id>com.github.trueddd.ezimport</id>
+    <name>ezimport</name>
+    <vendor email="dkuzmichn1ce@gmail.com" url="t.me/truetripled">I'm not a company</vendor>
+
+    <description><![CDATA[
+    Android Studio plugin for easy choosing and importing libraries to your project.
+    ]]></description>
+
+    <!-- please see https://www.jetbrains.org/intellij/sdk/docs/basics/getting_started/plugin_compatibility.html
+         on how to target different products -->
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+    </extensions>
+
+    <actions>
+        <action id="JetpackImportAction" class="JetpackImportAction" text="Jetpack Libs Import" description="Sample action desc">
+            <add-to-group group-id="ToolsMenu" anchor="first" />
+        </action>
+    </actions>
+</idea-plugin>
