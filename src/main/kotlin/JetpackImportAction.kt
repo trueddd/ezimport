@@ -1,18 +1,19 @@
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.LangDataKeys
-import com.intellij.openapi.application.runInEdt
-import com.intellij.openapi.application.runReadAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
+import data.Declaration
+import data.LibInfo
+import data.LibItem
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.jsoup.Jsoup
-import org.jsoup.parser.Tag
+import ui.ImportDialog
+import ui.LibsDialog
 import java.lang.Exception
-import java.util.regex.Pattern
 
 class JetpackImportAction : AnAction() {
 
@@ -23,97 +24,90 @@ class JetpackImportAction : AnAction() {
             NotificationUtils.notify(e.project, "Cannot import in non-Gradle files")
             return
         }
-        showLibs(e.project)
+        GlobalScope.launch(Dispatchers.Main) {
+            val libs = loadLibs() ?: run {
+                NotificationUtils.notify(e.project, "Libraries retrieving error")
+                return@launch
+            }
+            println("found ${libs.size} libs")
+            showLibs(libs, e.project)
+        }
     }
 
-    private fun showLibs(project: Project?) = loadLibs { libs ->
-        if (libs == null) {
-            NotificationUtils.notify(project, "Libraries retrieving error")
-            return@loadLibs
-        }
-        println("found ${libs.size} libs")
-        val libsDialog = LibsDialog(libs)
+    private suspend fun showLibs(libs: List<LibItem>, project: Project?) {
+        val libsDialog = LibsDialog(libs, project)
         if (libsDialog.showAndGet()) {
             val lib = libs[libsDialog.selectedLibIndex]
-            loadLib(lib.name, lib.link) {
-                println("lib info: ${it ?: "null"}")
+            val libInfo = loadLib(lib.name, lib.link) ?: return
+            println("lib info: $libInfo")
+            val importDialog = ImportDialog(libInfo)
+            if (importDialog.showAndGet()) {
+                println("import ok")
+            } else {
+                println("import cancel")
             }
         } else {
             println("not OK")
         }
     }
 
-    private fun loadLib(name: String, link: String, callback: (LibInfo?) -> Unit) {
+    private suspend fun loadLib(name: String, link: String): LibInfo? {
         val targetLink = "https://developer.android.com$link"
-        GlobalScope.launch(Dispatchers.IO) {
-            val document = try {
+        val document = try {
+            withContext(Dispatchers.IO) {
                 Jsoup.connect(targetLink).post()
-            } catch (e: Exception) {
-                runInEdt {
-                    callback.invoke(null)
-                }
-                return@launch
             }
-            val versionsList = withContext(Dispatchers.Default) {
-                document.body()
-                    .getElementsByTag("h3")
-                    .filter { it.text().startsWith("Version") }
-                    .map { it.text().substringAfter("Version").trim() }
-            }
-            val implCode = withContext(Dispatchers.Default) {
-                document.body()
-                    .getElementsByTag("pre")
-                    .filter { it.text().contains("dependencies {") }
-                    .firstOrNull()
-                    ?.text()
-                    ?.split('\n')
-                    ?.map { it.trim() }
-            }
-            val versionPlaceholder = implCode
-                ?.firstOrNull { it.startsWith("def") }
-                ?.substringAfter("def")
-                ?.substringBefore("=")
-                ?.trim()
-            val declarations = versionPlaceholder?.let { placeholder ->
-                implCode
-                    .filter { it.endsWith("$placeholder\"") }
-                    .map {
-                        val split = it.split(" ")
-                        Declaration(split.first(), split.last())
-                    }
-            } ?: emptyList()
-            val libInfo = LibInfo(name, targetLink, versionPlaceholder, declarations, versionsList)
-            runInEdt {
-                callback.invoke(libInfo)
-            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return null
         }
+        val versionsList = withContext(Dispatchers.Default) {
+            document.body()
+                .getElementsByTag("h3")
+                .filter { it.text().startsWith("Version") }
+                .map { it.text().substringAfter("Version").trim() }
+        }
+        val implCode = withContext(Dispatchers.Default) {
+            document.body()
+                .getElementsByTag("pre")
+                .firstOrNull { it.text().contains("dependencies {") }
+                ?.text()
+                ?.split('\n')
+                ?.map { it.trim() }
+        }
+        val versionPlaceholder = implCode
+            ?.firstOrNull { it.startsWith("def") }
+            ?.substringAfter("def")
+            ?.substringBefore("=")
+            ?.trim()
+        val declarations = versionPlaceholder?.let { placeholder ->
+            implCode
+                .filter { it.endsWith("$placeholder\"") }
+                .map {
+                    val split = it.split(" ")
+                    Declaration(split.first(), split.last())
+                }
+        } ?: emptyList()
+        return LibInfo(name, targetLink, versionPlaceholder, declarations, versionsList)
     }
 
-    private fun loadLibs(callback: (List<LibItem>?) -> Unit) {
-        GlobalScope.launch(Dispatchers.IO) {
-            val document = try {
-                Jsoup.connect("https://developer.android.com/jetpack/androidx/explorer").get()
-            } catch (e: Exception) {
-                runInEdt {
-                    callback.invoke(null)
-                }
-                return@launch
+    private suspend fun loadLibs(): List<LibItem>? {
+        val document = try {
+            withContext(Dispatchers.IO) {
+                Jsoup
+                    .connect("https://developer.android.com/jetpack/androidx/explorer")
+                    .get()
             }
-            val tableBody = document.body().getElementsByClass("list").firstOrNull() ?: run {
-                runInEdt {
-                    callback.invoke(null)
-                }
-                return@launch
-            }
-            val libs = tableBody.children().map {
-                val name = it.child(0).child(0).text()
-                val link = it.child(0).child(0).attr("href")
-                val desc = it.child(1).text()
-                LibItem(name, link, desc)
-            }
-            runInEdt {
-                callback.invoke(libs)
-            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return null
+        }
+        val tableBody = document.body().getElementsByClass("list").firstOrNull() ?: return null
+        return tableBody.children().map {
+            val name = it.child(0).child(0).text()
+            val link = it.child(0).child(0).attr("href")
+            val desc = it.child(1).text()
+            LibItem(name, link, desc)
         }
     }
 
